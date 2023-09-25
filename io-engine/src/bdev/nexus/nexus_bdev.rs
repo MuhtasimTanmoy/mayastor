@@ -41,12 +41,14 @@ use crate::{
             nexus_persistence::PersistentNexusInfo,
             NexusIoSubsystem,
         },
+        CHAN_ITER_MARK,
     },
     core::{
         partition,
         Bdev,
         DeviceEventSink,
         IoType,
+        Mthread,
         Protocol,
         Reactor,
         Share,
@@ -606,9 +608,24 @@ impl<'n> Nexus<'n> {
 
         self.traverse_io_channels(
             sender,
-            |chan, _sender| -> ChannelTraverseStatus {
-                chan.reconnect_all();
-                ChannelTraverseStatus::Ok
+            |chan, _sender, iter| -> ChannelTraverseStatus {
+                match chan.reconnect_all() {
+                    // The only path that can return EAGAIN here is the sync qpair connect via
+                    // get_io_handle() while doing reconnect_all the current thread has also sent
+                    // an async connect for the same qpair already. Upon receiving this error code,
+                    // we set a per-thread variable to store information about where were in the
+                    // channel iteration when this happened. As soon as the async connect completes, it
+                    // will consume this per-thread variable and resume the channel iteration.
+                    11 => {
+                        CHAN_ITER_MARK.with(|c| {
+                            let val = unsafe { &mut *c.get()};
+                            *val = Some((chan as *mut _ as *mut c_void, iter));
+                            warn!("EAGAIN: Putting marker and yielding iteration : {:?} - {}", chan, Mthread::current().unwrap().name());
+                        });
+                        return ChannelTraverseStatus::Cancel
+                    },
+                    _ => return ChannelTraverseStatus::Ok,
+                }
             },
             |status, sender| {
                 debug!("{self:?}: all I/O channels reconfigured");

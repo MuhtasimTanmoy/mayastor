@@ -847,7 +847,7 @@ impl<'n> Nexus<'n> {
         if has_io_log {
             self.traverse_io_channels(
                 (),
-                |chan, _| {
+                |chan, _, _| {
                     chan.reconnect_io_logs();
                     ChannelTraverseStatus::Ok
                 },

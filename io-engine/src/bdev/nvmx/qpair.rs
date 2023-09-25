@@ -8,17 +8,22 @@ use std::{
 
 use futures::channel::oneshot;
 
-use spdk_rs::libspdk::{
-    nvme_qpair_abort_all_queued_reqs,
-    nvme_transport_qpair_abort_reqs,
-    spdk_nvme_ctrlr,
-    spdk_nvme_ctrlr_alloc_io_qpair,
-    spdk_nvme_ctrlr_connect_io_qpair,
-    spdk_nvme_ctrlr_disconnect_io_qpair,
-    spdk_nvme_ctrlr_free_io_qpair,
-    spdk_nvme_ctrlr_get_default_io_qpair_opts,
-    spdk_nvme_io_qpair_opts,
-    spdk_nvme_qpair,
+use spdk_rs::{
+    libspdk::{
+        nvme_qpair_abort_all_queued_reqs,
+        nvme_transport_qpair_abort_reqs,
+        spdk_for_each_channel_continue,
+        spdk_io_channel_iter,
+        spdk_nvme_ctrlr,
+        spdk_nvme_ctrlr_alloc_io_qpair,
+        spdk_nvme_ctrlr_connect_io_qpair,
+        spdk_nvme_ctrlr_disconnect_io_qpair,
+        spdk_nvme_ctrlr_free_io_qpair,
+        spdk_nvme_ctrlr_get_default_io_qpair_opts,
+        spdk_nvme_io_qpair_opts,
+        spdk_nvme_qpair,
+    },
+    ChannelTraverseStatus,
 };
 
 #[cfg(feature = "spdk-async-qpair-connect")]
@@ -39,7 +44,10 @@ use spdk_rs::{
 #[cfg(feature = "spdk-async-qpair-connect")]
 use nix::errno::Errno;
 
-use crate::core::CoreError;
+use crate::{
+    bdev::{CHAN_ITER_MARK, nexus::NexusChannel},
+    core::{CoreError, Mthread},
+};
 
 use super::{nvme_bdev_running_config, SpdkNvmeController};
 
@@ -202,6 +210,14 @@ impl QPair {
         if self.state() == QPairState::Connected {
             trace!(?self, "I/O qpair already connected");
             return 0;
+        }
+
+        if self.state() == QPairState::Connecting {
+            // An async connect attempt has been made in parallel for this
+            // qpair. Can't proceed until that is finished. Drop the
+            // reference on channel and let go of newly acquired
+            // handle.
+            return Errno::EAGAIN as i32;
         }
 
         // During synchronous connection we shouldn't be preemped by any other
@@ -508,6 +524,21 @@ impl<'a> Connection<'a> {
         waiters.into_iter().for_each(|w| {
             w.send(res.clone())
                 .expect("Failed to notify a connection waiter");
+        });
+
+        // Wake up the waiter who received EAGAIN because this async connect was ongoing.
+        CHAN_ITER_MARK.with(|c| {
+            if let Some(cstored) = unsafe { &mut *c.get()}.take() {
+                let chan = unsafe {&mut *(cstored.0 as *mut NexusChannel)};
+                let iter = unsafe {&mut *(cstored.1)};
+                warn!("Consume marker and continue traversing channels: {:?} - {}", chan, Mthread::current().unwrap().name());
+                match chan.reconnect_all() {
+                    11 => assert!(false, "EAGAIN: Not Again Please..."),
+                    _ =>  unsafe {
+                            spdk_for_each_channel_continue(iter as *mut _ as *mut spdk_io_channel_iter , ChannelTraverseStatus::Ok.into());
+                        },
+                }
+            }
         });
     }
 

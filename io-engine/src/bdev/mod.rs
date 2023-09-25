@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use std::{cell::UnsafeCell, os::raw::c_void};
 
 pub use dev::{device_create, device_destroy, device_lookup, device_open};
 pub use device::{bdev_event_callback, bdev_io_ctx_pool_init, SpdkBlockDevice};
@@ -32,6 +33,10 @@ pub mod util;
 pub trait BdevCreateDestroy: CreateDestroy + GetName + std::fmt::Debug {}
 
 impl<T: CreateDestroy + GetName + std::fmt::Debug> BdevCreateDestroy for T {}
+
+thread_local! {
+    pub (crate) static CHAN_ITER_MARK: UnsafeCell<Option<(*mut c_void, *mut c_void)>> = UnsafeCell::new(None);
+}
 
 #[async_trait(?Send)]
 /// Main trait that must be implemented for every supported device type.
