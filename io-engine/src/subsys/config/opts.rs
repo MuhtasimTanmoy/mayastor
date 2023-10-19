@@ -84,7 +84,7 @@ pub struct NvmfTgtConfig {
     /// the max number of namespaces this target should allow for
     pub max_namespaces: u32,
     /// Command Retry Delay.
-    pub crdt: u16,
+    pub crdt: [u16; 3],
     /// TCP transport options
     pub opts: NvmfTcpTransportOpts,
 }
@@ -94,7 +94,7 @@ impl From<NvmfTgtConfig> for Box<spdk_nvmf_target_opts> {
         let mut out = Self::default();
         copy_str_with_null(&o.name, &mut out.name);
         out.max_subsystems = o.max_namespaces;
-        out.crdt[0] = o.crdt;
+        out.crdt = o.crdt;
         out
     }
 }
